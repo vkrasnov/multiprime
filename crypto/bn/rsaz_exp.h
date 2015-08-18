@@ -63,6 +63,12 @@ void RSAZ_512_mod_exp(BN_ULONG result[8],
                       const BN_ULONG m_norm[8], BN_ULONG k0,
                       const BN_ULONG RR[8]);
 
+/* Performs 4 modular exponentiations of 512 or 683 bit simultaneously */
+void RSAZ_mod_exp_avx2_x4(BIGNUM *r0, BIGNUM *e0, BIGNUM *p0, BN_MONT_CTX *c0,
+                          BIGNUM *r1, BIGNUM *e1, BIGNUM *p1, BN_MONT_CTX *c1,
+                          BIGNUM *r2, BIGNUM *e2, BIGNUM *p2, BN_MONT_CTX *c2,
+                          BIGNUM *r3, BIGNUM *e3, BIGNUM *p3, BN_MONT_CTX *c3,
+                          BN_ULONG bits);
 # endif
 
 #endif

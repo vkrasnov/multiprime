@@ -255,7 +255,7 @@ static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
              * problem because we generate primes with the top two
              * bits set and so the product is always of the
              * expected size. In the multi prime case, this doesn't
-             * follow. 
+             * follow.
              */
             if (!BN_mul(r1, rsa->n, ap->prime, ctx))
                 goto err;

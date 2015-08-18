@@ -109,6 +109,10 @@ rsaz-x86_64.s:	asm/rsaz-x86_64.pl
 	$(PERL) asm/rsaz-x86_64.pl $(PERLASM_SCHEME) > $@
 rsaz-avx2.s:	asm/rsaz-avx2.pl 
 	$(PERL) asm/rsaz-avx2.pl $(PERLASM_SCHEME) > $@
+rsaz_avx2_512bit_x4.s: asm/rsaz_avx2_512bit_x4.s
+	cp asm/rsaz_avx2_512bit_x4.s .
+rsaz_avx2_683bit_x4.s: asm/rsaz_avx2_683bit_x4.s
+	cp asm/rsaz_avx2_683bit_x4.s .
 
 bn-ia64.s:	asm/ia64.S
 	$(CC) $(CFLAGS) -E asm/ia64.S > $@

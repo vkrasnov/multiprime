@@ -113,6 +113,7 @@
 #include "internal/bn_int.h"
 #include <openssl/rsa.h>
 #include <openssl/rand.h>
+#include "../bn/rsaz_exp.h"
 
 #ifndef RSA_NULL
 
@@ -150,6 +151,33 @@ static RSA_METHOD rsa_pkcs1_eay_meth = {
     NULL,                       /* rsa_keygen */
     NULL                        /* rsa_multi_prime_keygen */
 };
+
+static int parallel_mod_exp_eligible(RSA *rsa, int num_additional_primes)
+{
+# define BN_num_words(a) ((BN_num_bits(a)+63)/64)
+    /* Currently only 2048 moduly with 3 and 4 primes are optimized */
+    if ((OPENSSL_ia32cap_loc()[2] & (1 << 5)) == 0)
+        return 0;
+    if (BN_num_bits(rsa->n) != 2048)
+        return 0;
+    if (num_additional_primes == 1)
+        return 683;
+    if (num_additional_primes == 2) {
+        RSA_additional_prime *p3 =
+                      sk_RSA_additional_prime_value(rsa->additional_primes, 0);
+        RSA_additional_prime *p4 =
+                      sk_RSA_additional_prime_value(rsa->additional_primes, 1);
+
+        if (BN_num_words(rsa->dmq1) == 8 && BN_num_words(rsa->q) == 8 &&
+            BN_num_words(rsa->dmp1) == 8 && BN_num_words(rsa->p) == 8 &&
+            BN_num_words(p3->prime) == 8 && BN_num_words(p3->exp) == 8 &&
+            BN_num_words(p4->prime) == 8 && BN_num_words(p4->exp) == 8)
+            return 512;
+        else
+            return 0;
+    }
+    return 0;
+}
 
 const RSA_METHOD *RSA_PKCS1_SSLeay(void)
 {
@@ -723,6 +751,10 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
     const BIGNUM *c;
     int ret = 0, idx, num_additional_primes = 0;
 
+#ifdef RSAZ_ENABLED
+    int do_parallel = 0;
+#endif
+
     if (rsa->additional_primes != NULL)
         num_additional_primes =
                            sk_RSA_additional_prime_num(rsa->additional_primes);
@@ -783,133 +815,226 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
             (&rsa->_method_mod_n, CRYPTO_LOCK_RSA, rsa->n, ctx))
             goto err;
 
-    /* compute I mod q */
     if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
         BN_with_flags(local_c, I, BN_FLG_CONSTTIME);
         c = local_c;
     } else
         c = I;
 
-    if (!BN_mod(r1, c, rsa->q, ctx))
-        goto err;
+#ifdef RSAZ_ENABLED
+    do_parallel = parallel_mod_exp_eligible(rsa, num_additional_primes);
+    if (do_parallel) {
+        BIGNUM *r2, *r3;
+        RSA_additional_prime *p3, *p4;
+        r1 = BN_CTX_get(ctx);
+        r2 = BN_CTX_get(ctx);
 
-    /* compute r1^dmq1 mod q */
-    if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
-        dmq1 = local_dmq1;
-        BN_with_flags(dmq1, rsa->dmq1, BN_FLG_CONSTTIME);
-    } else
-        dmq1 = rsa->dmq1;
-    if (!rsa->meth->bn_mod_exp(r2, r1, dmq1, rsa->q, ctx, rsa->_method_mod_q))
-        goto err;
-
-    /* compute I mod p */
-    if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
-        BN_with_flags(local_c, I, BN_FLG_CONSTTIME);
-        c = local_c;
-    } else
-        c = I;
-
-    if (!BN_mod(r1, c, rsa->p, ctx))
-        goto err;
-
-    /* compute r1^dmp1 mod p */
-    if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
-        dmp1 = local_dmp1;
-        BN_with_flags(dmp1, rsa->dmp1, BN_FLG_CONSTTIME);
-    } else
-        dmp1 = rsa->dmp1;
-    if (!rsa->meth->bn_mod_exp(r0, r1, dmp1, rsa->p, ctx, rsa->_method_mod_p))
-        goto err;
-
-    if (!BN_sub(r0, r0, r2))
-        goto err;
-    /*
-     * This will help stop the size of r0 increasing, which does affect the
-     * multiply if it optimised for a power of 2 size
-     */
-    if (BN_is_negative(r0))
-        if (!BN_add(r0, r0, rsa->p))
+        /* compute I mod q */
+        if (!BN_mod(r0, c, rsa->q, ctx))
+            goto err;
+        /* compute I mod p */
+        if (!BN_mod(r1, c, rsa->p, ctx))
+                goto err;
+        /* compute I mod prime 3 */
+        p3 = sk_RSA_additional_prime_value(rsa->additional_primes, 0);
+        if (!BN_mod(r2, c, p3->prime, ctx))
+            goto err;
+        if (rsa->flags & RSA_FLAG_CACHE_PRIVATE) {
+            if (!BN_MONT_CTX_set_locked(&p3->method_mod, CRYPTO_LOCK_RSA,
+                                        p3->prime, ctx))
+                goto err;
+        }
+        if (num_additional_primes == 2) {
+            r3 = BN_CTX_get(ctx);
+            p4 = sk_RSA_additional_prime_value(rsa->additional_primes, 1);
+            if (!BN_mod(r3, c, p4->prime, ctx))
+                goto err;
+            if (rsa->flags & RSA_FLAG_CACHE_PRIVATE) {
+                if (!BN_MONT_CTX_set_locked(&p4->method_mod, CRYPTO_LOCK_RSA,
+                                            p4->prime, ctx))
+                    goto err;
+            }
+            if (NULL == bn_wexpand(r3, (do_parallel+63)/64))
+                goto err;
+        } else {
+            r3 = r2;
+            p4 = p3;
+        }
+        if (NULL == bn_wexpand(r0, (do_parallel+63)/64))
+            goto err;
+        if (NULL == bn_wexpand(r1, (do_parallel+63)/64))
+            goto err;
+        if (NULL == bn_wexpand(r2, (do_parallel+63)/64))
             goto err;
 
-    if (!BN_mul(r1, r0, rsa->iqmp, ctx))
-        goto err;
+        RSAZ_mod_exp_avx2_x4(r0, rsa->dmq1, rsa->q, rsa->_method_mod_q,
+                             r1, rsa->dmp1, rsa->p, rsa->_method_mod_p,
+                             r2, p3->exp, p3->prime, p3->method_mod,
+                             r3, p4->exp, p4->prime, p4->method_mod, do_parallel);
 
-    /* Turn BN_FLG_CONSTTIME flag on before division operation */
-    if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
-        pr1 = local_r1;
-        BN_with_flags(pr1, r1, BN_FLG_CONSTTIME);
-    } else
-        pr1 = r1;
-    if (!BN_mod(r0, pr1, rsa->p, ctx))
-        goto err;
+		if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+			BN_set_flags(r1, BN_FLG_CONSTTIME);
+		if (!BN_sub(r1,r1,r0)) goto err;
+		if (!BN_mul(r1,r1,rsa->iqmp,ctx)) goto err;
+		if (!BN_mod(r1,r1,rsa->p,ctx)) goto err;
+		if (BN_is_negative(r1))
+			{
+			if (!BN_add(r1,r1,rsa->p)) goto err;
+			}
+		if (!BN_mul(r1,r1,rsa->q,ctx)) goto err;
+		if (!BN_add(r0,r0,r1)) goto err;
 
-    /*
-     * If p < q it is occasionally possible for the correction of adding 'p'
-     * if r0 is negative above to leave the result still negative. This can
-     * break the private key operations: the following second correction
-     * should *always* correct this rare occurrence. This will *never* happen
-     * with OpenSSL generated keys because they ensure p > q [steve]
-     */
-    if (BN_is_negative(r0))
-        if (!BN_add(r0, r0, rsa->p))
+		if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+			BN_set_flags(r2, BN_FLG_CONSTTIME);
+		if (!BN_sub(r2,r2,r0)) goto err;
+		if (!BN_mul(r2,r2,p3->coeff,ctx)) goto err;
+		if (!BN_mod(r2,r2,p3->prime,ctx)) goto err;
+		if (BN_is_negative(r2))
+			{
+			if (!BN_add(r2,r2,p3->prime)) goto err;
+			}
+		if (!BN_mul(r2,r2,p3->r,ctx)) goto err;
+		if (!BN_add(r0,r0,r2)) goto err;
+
+		if (num_additional_primes == 2)
+			{
+			if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+				BN_set_flags(r3, BN_FLG_CONSTTIME);
+			if (!BN_sub(r3,r3,r0)) goto err;
+			if (!BN_mul(r3,r3,p4->coeff,ctx)) goto err;
+			if (!BN_mod(r3,r3,p4->prime,ctx)) goto err;
+			if (BN_is_negative(r3))
+				{
+				if (!BN_add(r3,r3,p4->prime)) goto err;
+				}
+			if (!BN_mul(r3,r3,p4->r,ctx)) goto err;
+			if (!BN_add(r0,r0,r3)) goto err;
+			}
+	} else
+
+#endif
+    {
+        /* compute I mod q */
+        if (!BN_mod(r1, c, rsa->q, ctx))
             goto err;
-    if (!BN_mul(r1, r0, rsa->q, ctx))
-        goto err;
-    if (!BN_add(r0, r1, r2))
-        goto err;
 
-    for (idx = 0; idx < num_additional_primes; idx++) {
-        /* multi-prime RSA. */
-        BIGNUM *exp, *prime;
-        RSA_additional_prime* ap =
-                    sk_RSA_additional_prime_value(rsa->additional_primes, idx);
+        /* compute r1^dmq1 mod q */
+        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+            dmq1 = local_dmq1;
+            BN_with_flags(dmq1, rsa->dmq1, BN_FLG_CONSTTIME);
+        } else
+            dmq1 = rsa->dmq1;
+        if (!rsa->meth->bn_mod_exp(r2, r1, dmq1, rsa->q, ctx, rsa->_method_mod_q))
+            goto err;
+
+        /* compute I mod p */
+        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+            BN_with_flags(local_c, I, BN_FLG_CONSTTIME);
+            c = local_c;
+        } else
+            c = I;
+
+        if (!BN_mod(r1, c, rsa->p, ctx))
+            goto err;
+
+        /* compute r1^dmp1 mod p */
+        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+            dmp1 = local_dmp1;
+            BN_with_flags(dmp1, rsa->dmp1, BN_FLG_CONSTTIME);
+        } else
+            dmp1 = rsa->dmp1;
+        if (!rsa->meth->bn_mod_exp(r0, r1, dmp1, rsa->p, ctx, rsa->_method_mod_p))
+            goto err;
+
+        if (!BN_sub(r0, r0, r2))
+            goto err;
+        /*
+         * This will help stop the size of r0 increasing, which does affect the
+         * multiply if it optimised for a power of 2 size
+         */
+        if (BN_is_negative(r0))
+            if (!BN_add(r0, r0, rsa->p))
+                goto err;
+
+        if (!BN_mul(r1, r0, rsa->iqmp, ctx))
+            goto err;
+
+        /* Turn BN_FLG_CONSTTIME flag on before division operation */
+        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+            pr1 = local_r1;
+            BN_with_flags(pr1, r1, BN_FLG_CONSTTIME);
+        } else
+            pr1 = r1;
+        if (!BN_mod(r0, pr1, rsa->p, ctx))
+            goto err;
 
         /*
-         * c will already point to a BIGNUM with the
-         * correct flags if RSA_FLAG_NO_CONSTTIME isn't set.
+         * If p < q it is occasionally possible for the correction of adding 'p'
+         * if r0 is negative above to leave the result still negative. This can
+         * break the private key operations: the following second correction
+         * should *always* correct this rare occurrence. This will *never* happen
+         * with OpenSSL generated keys because they ensure p > q [steve]
          */
-        if (!BN_mod(r1, (rsa->flags & RSA_FLAG_NO_CONSTTIME) ? I : c,
-                    ap->prime, ctx))
+        if (BN_is_negative(r0))
+            if (!BN_add(r0, r0, rsa->p))
+                goto err;
+        if (!BN_mul(r1, r0, rsa->q, ctx))
+            goto err;
+        if (!BN_add(r0, r1, r2))
             goto err;
 
-        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
-            exp = local_dmq1;
-            BN_with_flags(exp, ap->exp, BN_FLG_CONSTTIME);
-            prime = local_dmp1;
-            BN_with_flags(prime, ap->prime, BN_FLG_CONSTTIME);
-        } else {
-            exp = ap->exp;
-            prime = ap->prime;
-        }
+        for (idx = 0; idx < num_additional_primes; idx++) {
+            /* multi-prime RSA. */
+            BIGNUM *exp, *prime;
+            RSA_additional_prime* ap =
+                        sk_RSA_additional_prime_value(rsa->additional_primes, idx);
 
-        if (rsa->flags & RSA_FLAG_CACHE_PRIVATE) {
-            if (!BN_MONT_CTX_set_locked(&ap->method_mod, CRYPTO_LOCK_RSA,
-                                        prime, ctx))
+            /*
+             * c will already point to a BIGNUM with the
+             * correct flags if RSA_FLAG_NO_CONSTTIME isn't set.
+             */
+            if (!BN_mod(r1, (rsa->flags & RSA_FLAG_NO_CONSTTIME) ? I : c,
+                        ap->prime, ctx))
+                goto err;
+
+            if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+                exp = local_dmq1;
+                BN_with_flags(exp, ap->exp, BN_FLG_CONSTTIME);
+                prime = local_dmp1;
+                BN_with_flags(prime, ap->prime, BN_FLG_CONSTTIME);
+            } else {
+                exp = ap->exp;
+                prime = ap->prime;
+            }
+
+            if (rsa->flags & RSA_FLAG_CACHE_PRIVATE) {
+                if (!BN_MONT_CTX_set_locked(&ap->method_mod, CRYPTO_LOCK_RSA,
+                                            prime, ctx))
+                    goto err;
+            }
+
+            /* compute r1^dmr1 mod r */
+            if (!rsa->meth->bn_mod_exp(r2,r1,exp,prime,ctx,ap->method_mod))
+                goto err;
+            if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+                BN_set_flags(r2, BN_FLG_CONSTTIME);
+
+            if (!BN_sub(r2,r2,r0))
+                goto err;
+            if (!BN_mul(r2,r2,ap->coeff,ctx))
+                goto err;
+            if (!BN_mod(r2,r2,prime,ctx))
+                goto err;
+            if (BN_is_negative(r2)) {
+                if (!BN_add(r2,r2,prime))
+                    goto err;
+            }
+            if (!BN_mul(r2,r2,ap->r,ctx))
+                goto err;
+            if (!BN_add(r0,r0,r2))
                 goto err;
         }
-
-        /* compute r1^dmr1 mod r */
-        if (!rsa->meth->bn_mod_exp(r2,r1,exp,prime,ctx,ap->method_mod))
-            goto err;
-        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
-            BN_set_flags(r2, BN_FLG_CONSTTIME);
-
-        if (!BN_sub(r2,r2,r0))
-            goto err;
-        if (!BN_mul(r2,r2,ap->coeff,ctx))
-            goto err;
-        if (!BN_mod(r2,r2,prime,ctx))
-            goto err;
-        if (BN_is_negative(r2)) {
-            if (!BN_add(r2,r2,prime))
-                goto err;
-        }
-        if (!BN_mul(r2,r2,ap->r,ctx))
-            goto err;
-        if (!BN_add(r0,r0,r2))
-            goto err;
     }
-
     if (rsa->e && rsa->n) {
         if (!rsa->meth->bn_mod_exp(vrfy, r0, rsa->e, rsa->n, ctx,
                                    rsa->_method_mod_n))
