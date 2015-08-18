@@ -126,7 +126,7 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
     }
 
     for (idx = 0; idx < num_additional_primes; idx++) {
-        const RSA_additional_prime* ap = 
+        const RSA_additional_prime* ap =
                     sk_RSA_additional_prime_value(key->additional_primes, idx);
         r = BN_mul(i, i, ap->prime, ctx);
         if (!r) {
