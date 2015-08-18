@@ -208,10 +208,10 @@ static int do_rsa_print(BIO *bp, const RSA *x, int off, int priv)
         update_buflen(x->iqmp, &buf_len);
         if (x->additional_primes != NULL) {
             int i;
-            num_additional_primes = 
+            num_additional_primes =
                              sk_RSA_additional_prime_num(x->additional_primes);
             for (i = 0; i < num_additional_primes; i++) {
-                RSA_additional_prime *ap = 
+                RSA_additional_prime *ap =
                         sk_RSA_additional_prime_value(x->additional_primes, i);
                 update_buflen(ap->prime, &buf_len);
                 update_buflen(ap->exp, &buf_len);

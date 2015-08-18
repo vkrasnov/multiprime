@@ -238,7 +238,7 @@ void RSA_free(RSA *r)
         int j;
         for (j = 0; j < sk_RSA_additional_prime_num(r->additional_primes); j++)
         {
-            RSA_additional_prime *ap = 
+            RSA_additional_prime *ap =
                         sk_RSA_additional_prime_value(r->additional_primes, j);
             BN_clear_free(ap->prime);
             BN_clear_free(ap->exp);

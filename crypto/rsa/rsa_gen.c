@@ -86,7 +86,7 @@ int RSA_generate_key_ex(RSA *rsa, int bits, BIGNUM *e_value, BN_GENCB *cb)
     return rsa_builtin_multi_prime_keygen(rsa, bits, 2, e_value, cb);
 }
 
-int RSA_generate_multi_prime_key(RSA *rsa, int bits, int num_primes, 
+int RSA_generate_multi_prime_key(RSA *rsa, int bits, int num_primes,
                                  BIGNUM *e_value, BN_GENCB *cb)
 {
     if((rsa->meth->flags & RSA_METHOD_FLAG_MULTI_PRIME_OK) &&
@@ -173,7 +173,7 @@ static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
     BN_copy(rsa->e, e_value);
 
     /* generate p and q */
-    prime_bits = (bits + (num_primes - 1)) / num_primes;    
+    prime_bits = (bits + (num_primes - 1)) / num_primes;
     for (;;) {
         if (!BN_generate_prime_ex(rsa->p, prime_bits, 0, NULL, NULL, cb))
             goto err;
@@ -226,7 +226,7 @@ static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
         prime_bits = ((bits - BN_num_bits(rsa->n)) + (num_primes - (i + 1))) /
                      (num_primes - i);
         for (;;) {
-            if (!BN_generate_prime_ex(ap->prime, prime_bits, 0, NULL, NULL, 
+            if (!BN_generate_prime_ex(ap->prime, prime_bits, 0, NULL, NULL,
                                       cb))
                 goto err;
             if (BN_cmp(rsa->p, ap->prime) == 0)
@@ -249,7 +249,7 @@ static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
             if (i != num_primes - 1)
                 break;
 
-            /* 
+            /*
              * For the last prime we'll check that it makes
              * n large enough. In the two prime case this isn't a
              * problem because we generate primes with the top two
@@ -266,14 +266,14 @@ static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
                 goto err;
         }
 
-        /* 
+        /*
          * ap->r is is the product of all the primes prior to the
          * current one (including p and q).
          */
         if (!BN_copy(ap->r, rsa->n))
             goto err;
         if (i == num_primes - 1) {
-                /* 
+                /*
                  * In the case of the last prime, we calculated n in r1
                  * in the loop above.
                  */
@@ -379,7 +379,7 @@ static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
             if (ap->r != NULL)
                 BN_clear_free(ap->r);
         }
-        sk_RSA_additional_prime_pop_free(additional_primes, 
+        sk_RSA_additional_prime_pop_free(additional_primes,
                                          int_rsa_free_additional_prime);
     }
 

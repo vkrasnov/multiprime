@@ -72,7 +72,7 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
     }
 
     if (key->additional_primes != NULL)
-        num_additional_primes = 
+        num_additional_primes =
                            sk_RSA_additional_prime_num(key->additional_primes);
 
     i = BN_new();
@@ -107,7 +107,7 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
     }
 
     for (idx = 0; idx < num_additional_primes; idx++) {
-        const RSA_additional_prime* ap = 
+        const RSA_additional_prime* ap =
                     sk_RSA_additional_prime_value(key->additional_primes, idx);
         r = BN_is_prime_ex(ap->prime, BN_prime_checks, NULL, NULL);
         if (r != 1) {
@@ -117,7 +117,7 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
             RSAerr(RSA_F_RSA_CHECK_KEY, RSA_R_ADDITIONAL_PRIME_NOT_PRIME);
         }
     }
- 	
+
     /* n = p*q? */
     r = BN_mul(i, key->p, key->q, ctx);
     if (!r) {
@@ -247,7 +247,7 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
 
         if (BN_cmp(j, ap->exp) != 0) {
             ret = 0;
-            RSAerr(RSA_F_RSA_CHECK_KEY, 
+            RSAerr(RSA_F_RSA_CHECK_KEY,
                    RSA_R_ADDITIONAL_EXP_NOT_CONGRUENT_TO_D);
         }
 

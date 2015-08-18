@@ -864,11 +864,11 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
         RSA_additional_prime* ap =
                     sk_RSA_additional_prime_value(rsa->additional_primes, idx);
 
-        /* 
+        /*
          * c will already point to a BIGNUM with the
          * correct flags if RSA_FLAG_NO_CONSTTIME isn't set.
          */
-        if (!BN_mod(r1, (rsa->flags & RSA_FLAG_NO_CONSTTIME) ? I : c, 
+        if (!BN_mod(r1, (rsa->flags & RSA_FLAG_NO_CONSTTIME) ? I : c,
                     ap->prime, ctx))
             goto err;
 
@@ -901,7 +901,7 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
         if (!BN_mod(r2,r2,prime,ctx))
             goto err;
         if (BN_is_negative(r2)) {
-            if (!BN_add(r2,r2,prime)) 
+            if (!BN_add(r2,r2,prime))
                 goto err;
         }
         if (!BN_mul(r2,r2,ap->r,ctx))
@@ -909,7 +909,7 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
         if (!BN_add(r0,r0,r2))
             goto err;
     }
-    
+
     if (rsa->e && rsa->n) {
         if (!rsa->meth->bn_mod_exp(vrfy, r0, rsa->e, rsa->n, ctx,
                                    rsa->_method_mod_n))

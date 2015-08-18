@@ -126,7 +126,7 @@ struct rsa_meth_st {
      * things as "builtin software" implementations.
      */
     int (*rsa_keygen) (RSA *rsa, int bits, BIGNUM *e, BN_GENCB *cb);
-    /* 
+    /*
      * rsa_multi_prime_keygen is only called if the engine declares that it
      * supports multi-prime RSA by setting RSA_METHOD_FLAG_MULTI_PRIME_OK
      * in |flags|. (Other engines may be using an older definition of struct

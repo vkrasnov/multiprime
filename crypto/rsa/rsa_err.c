@@ -130,6 +130,7 @@ static ERR_STRING_DATA RSA_str_functs[] = {
     {ERR_FUNC(RSA_F_RSA_PADDING_CHECK_X931), "RSA_padding_check_X931"},
     {ERR_FUNC(RSA_F_RSA_PRINT), "RSA_print"},
     {ERR_FUNC(RSA_F_RSA_PRINT_FP), "RSA_print_fp"},
+    {ERR_FUNC(RSA_F_RSA_PRIVATE_ENCRYPT), "RSA_private_encrypt"},
     {ERR_FUNC(RSA_F_RSA_PRIV_DECODE), "RSA_PRIV_DECODE"},
     {ERR_FUNC(RSA_F_RSA_PRIV_ENCODE), "RSA_PRIV_ENCODE"},
     {ERR_FUNC(RSA_F_RSA_PSS_TO_CTX), "RSA_PSS_TO_CTX"},
@@ -146,6 +147,12 @@ static ERR_STRING_DATA RSA_str_functs[] = {
 };
 
 static ERR_STRING_DATA RSA_str_reasons[] = {
+    {ERR_REASON(RSA_R_ADDITIONAL_COEFF_INCORRECT),
+     "additional coeff incorrect"},
+    {ERR_REASON(RSA_R_ADDITIONAL_EXP_NOT_CONGRUENT_TO_D),
+     "additional exp not congruent to d"},
+    {ERR_REASON(RSA_R_ADDITIONAL_PRIME_NOT_PRIME),
+     "additional prime not prime"},
     {ERR_REASON(RSA_R_ALGORITHM_MISMATCH), "algorithm mismatch"},
     {ERR_REASON(RSA_R_BAD_E_VALUE), "bad e value"},
     {ERR_REASON(RSA_R_BAD_FIXED_HEADER_DECRYPT), "bad fixed header decrypt"},
