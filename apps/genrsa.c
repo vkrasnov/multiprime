@@ -79,7 +79,8 @@ static int genrsa_cb(int p, int n, BN_GENCB *cb);
 typedef enum OPTION_choice {
     OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
     OPT_3, OPT_F4, OPT_NON_FIPS_ALLOW, OPT_ENGINE,
-    OPT_OUT, OPT_RAND, OPT_PASSOUT, OPT_CIPHER
+    OPT_OUT, OPT_RAND, OPT_PASSOUT, OPT_CIPHER,
+    OPT_NPRIMES
 } OPTION_CHOICE;
 
 OPTIONS genrsa_options[] = {
@@ -96,6 +97,7 @@ OPTIONS genrsa_options[] = {
 # ifndef OPENSSL_NO_ENGINE
     {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
 # endif
+    {"nprimes", OPT_NPRIMES, 'p', "Generate modulus with n prime factors"},
     {NULL}
 };
 
@@ -108,7 +110,7 @@ int genrsa_main(int argc, char **argv)
     BIO *out = NULL;
     RSA *rsa = NULL;
     const EVP_CIPHER *enc = NULL;
-    int ret = 1, non_fips_allow = 0, num = DEFBITS, private = 0;
+    int ret = 1, non_fips_allow = 0, num = DEFBITS, private = 0, nprimes = 2;
     unsigned long f4 = RSA_F4;
     char *outfile = NULL, *passoutarg = NULL, *passout = NULL;
     char *inrand = NULL, *prog, *hexe, *dece;
@@ -155,6 +157,10 @@ int genrsa_main(int argc, char **argv)
             if (!opt_cipher(opt_unknown(), &enc))
                 goto end;
             break;
+        case OPT_NPRIMES:
+            if (!opt_int(opt_arg(), &nprimes))
+                goto end;
+            break;
         }
     }
     argc = opt_num_rest();
@@ -163,6 +169,11 @@ int genrsa_main(int argc, char **argv)
 
     if (argv[0] && (!opt_int(argv[0], &num) || num <= 0))
         goto end;
+
+    if (nprimes < 2) {
+        BIO_printf(bio_err, "Illegal number of primes\n");
+        goto end;
+    }
 
     if (!app_passwd(NULL, passoutarg, NULL, &passout)) {
         BIO_printf(bio_err, "Error getting password\n");
@@ -194,7 +205,8 @@ int genrsa_main(int argc, char **argv)
     if (non_fips_allow)
         rsa->flags |= RSA_FLAG_NON_FIPS_ALLOW;
 
-    if (!BN_set_word(bn, f4) || !RSA_generate_key_ex(rsa, num, bn, cb))
+    if (!BN_set_word(bn, f4) ||
+	!RSA_generate_multi_prime_key(rsa, num, nprimes, bn, cb))
         goto end;
 
     app_RAND_write_file(NULL);

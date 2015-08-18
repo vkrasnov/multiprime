@@ -68,18 +68,63 @@
 static int rsa_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
                   void *exarg)
 {
+    RSA *rsa = (RSA*) *pval;
+    BN_CTX *ctx = NULL;
+    BIGNUM *product_of_primes_so_far = NULL;
+    int r = 0;
+
     if (operation == ASN1_OP_NEW_PRE) {
         *pval = (ASN1_VALUE *)RSA_new();
         if (*pval)
-            return 2;
-        return 0;
+            r = 2;
     } else if (operation == ASN1_OP_FREE_PRE) {
-        RSA_free((RSA *)*pval);
+        RSA_free(rsa);
         *pval = NULL;
-        return 2;
-    }
-    return 1;
+        r = 2;
+    } else if (operation == ASN1_OP_D2I_POST) {
+        if (rsa->version > 1)
+            goto err;
+        if (rsa->additional_primes != NULL) {
+            int i;
+            int n = sk_RSA_additional_prime_num(rsa->additional_primes);
+            ctx = BN_CTX_new();
+            product_of_primes_so_far = BN_new();
+            if (!BN_mul(product_of_primes_so_far, rsa->p, rsa->q, ctx))
+                goto err;
+            for (i = 0; i < n; i++) {
+                RSA_additional_prime* ap =
+                      sk_RSA_additional_prime_value(rsa->additional_primes, i);
+                ap->r = BN_dup(product_of_primes_so_far);
+                if (!ap->r)
+                    goto err;
+                if (!BN_mul(product_of_primes_so_far, product_of_primes_so_far,
+                            ap->prime, ctx))
+                    goto err;
+
+                ap->method_mod = NULL;
+            }
+            if (!(rsa->meth->flags & RSA_METHOD_FLAG_MULTI_PRIME_OK)) {
+                rsa->engine = NULL;
+                rsa->meth = RSA_PKCS1_SSLeay();
+            }
+        }
+        r = 2;
+    } else
+        r = 1;
+err:
+    if (ctx)
+        BN_CTX_free(ctx);
+    if (product_of_primes_so_far)
+        BN_free(product_of_primes_so_far);
+
+    return r;
 }
+
+ASN1_SEQUENCE(RSA_additional_prime) = {
+        ASN1_SIMPLE(RSA_additional_prime, prime, CBIGNUM),
+        ASN1_SIMPLE(RSA_additional_prime, exp, CBIGNUM),
+        ASN1_SIMPLE(RSA_additional_prime, coeff, CBIGNUM),
+} ASN1_SEQUENCE_END(RSA_additional_prime)
 
 ASN1_SEQUENCE_cb(RSAPrivateKey, rsa_cb) = {
         ASN1_SIMPLE(RSA, version, LONG),
@@ -90,9 +135,9 @@ ASN1_SEQUENCE_cb(RSAPrivateKey, rsa_cb) = {
         ASN1_SIMPLE(RSA, q, CBIGNUM),
         ASN1_SIMPLE(RSA, dmp1, CBIGNUM),
         ASN1_SIMPLE(RSA, dmq1, CBIGNUM),
-        ASN1_SIMPLE(RSA, iqmp, CBIGNUM)
+        ASN1_SIMPLE(RSA, iqmp, CBIGNUM),
+        ASN1_SEQUENCE_OF_OPT(RSA, additional_primes, RSA_additional_prime)
 } ASN1_SEQUENCE_END_cb(RSA, RSAPrivateKey)
-
 
 ASN1_SEQUENCE_cb(RSAPublicKey, rsa_cb) = {
         ASN1_SIMPLE(RSA, n, BIGNUM),

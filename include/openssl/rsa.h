@@ -64,6 +64,7 @@
 # include <openssl/bio.h>
 # include <openssl/crypto.h>
 # include <openssl/ossl_typ.h>
+# include <openssl/safestack.h>
 # ifdef OPENSSL_USE_DEPRECATED
 #  include <openssl/bn.h>
 # endif
@@ -125,7 +126,34 @@ struct rsa_meth_st {
      * things as "builtin software" implementations.
      */
     int (*rsa_keygen) (RSA *rsa, int bits, BIGNUM *e, BN_GENCB *cb);
+    /* 
+     * rsa_multi_prime_keygen is only called if the engine declares that it
+     * supports multi-prime RSA by setting RSA_METHOD_FLAG_MULTI_PRIME_OK
+     * in |flags|. (Other engines may be using an older definition of struct
+     * rsa_meth_st without this field.)
+     */
+    int (*rsa_multi_prime_keygen)(RSA *rsa, int bits, int num_primes,
+                                  BIGNUM *e, BN_GENCB *cb);
 };
+
+    /*
+     * RSA_additional_prime contains information about the third, forth etc
+     * prime in a multi-prime RSA key.
+     */
+struct RSA_additional_prime_st {
+    BIGNUM *prime;
+    BIGNUM *exp;   /* d^{prime-1} mod prime */
+    BIGNUM *coeff; /* r * coeff = 1 mod prime. */
+
+    /* Values below here are not in the ASN.1 */
+    BIGNUM *r;     /* the product of all primes (including p and q)
+                    * prior to this one. */
+    BN_MONT_CTX *method_mod; /* Used to cache montgomery values. */
+};
+
+typedef struct RSA_additional_prime_st RSA_additional_prime;
+
+DECLARE_STACK_OF(RSA_additional_prime);
 
 struct rsa_st {
     /*
@@ -145,6 +173,7 @@ struct rsa_st {
     BIGNUM *dmp1;
     BIGNUM *dmq1;
     BIGNUM *iqmp;
+    STACK_OF(RSA_additional_prime) *additional_primes;
     /* be careful using this if the RSA structure is shared */
     CRYPTO_EX_DATA ex_data;
     int references;
@@ -220,6 +249,10 @@ struct rsa_st {
  * private key operations.
  */
 # define RSA_FLAG_NO_CONSTTIME           0x0100
+/*
+ * indicate support of multi-prime RSA keys
+ */
+# define RSA_METHOD_FLAG_MULTI_PRIME_OK  0x0200
 # ifdef OPENSSL_USE_DEPRECATED
 /* deprecated name for the flag*/
 /*
@@ -332,6 +365,9 @@ DECLARE_DEPRECATED(RSA *RSA_generate_key(int bits, unsigned long e, void
 
 /* New version */
 int RSA_generate_key_ex(RSA *rsa, int bits, BIGNUM *e, BN_GENCB *cb);
+
+int RSA_generate_multi_prime_key(RSA *rsa, int bits, int num_primes,
+                                 BIGNUM *e, BN_GENCB *cb);
 
 int RSA_X931_derive_ex(RSA *rsa, BIGNUM *p1, BIGNUM *p2, BIGNUM *q1,
                        BIGNUM *q2, const BIGNUM *Xp1, const BIGNUM *Xp2,
@@ -569,6 +605,7 @@ void ERR_load_RSA_strings(void);
 # define RSA_F_RSA_PADDING_CHECK_X931                     128
 # define RSA_F_RSA_PRINT                                  115
 # define RSA_F_RSA_PRINT_FP                               116
+# define RSA_F_RSA_PRIVATE_ENCRYPT                        164
 # define RSA_F_RSA_PRIV_DECODE                            137
 # define RSA_F_RSA_PRIV_ENCODE                            138
 # define RSA_F_RSA_PSS_TO_CTX                             155
@@ -581,6 +618,9 @@ void ERR_load_RSA_strings(void);
 # define RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1                  126
 
 /* Reason codes. */
+# define RSA_R_ADDITIONAL_COEFF_INCORRECT                 165
+# define RSA_R_ADDITIONAL_EXP_NOT_CONGRUENT_TO_D          166
+# define RSA_R_ADDITIONAL_PRIME_NOT_PRIME                 167
 # define RSA_R_ALGORITHM_MISMATCH                         100
 # define RSA_R_BAD_E_VALUE                                101
 # define RSA_R_BAD_FIXED_HEADER_DECRYPT                   102
@@ -620,6 +660,8 @@ void ERR_load_RSA_strings(void);
 # define RSA_R_KEY_SIZE_TOO_SMALL                         120
 # define RSA_R_LAST_OCTET_INVALID                         134
 # define RSA_R_MODULUS_TOO_LARGE                          105
+# define RSA_R_MULTI_PRIME_NOT_SUPPORTED                  168
+# define RSA_R_MUST_HAVE_AT_LEAST_TWO_PRIMES              169
 # define RSA_R_NO_PUBLIC_EXPONENT                         140
 # define RSA_R_NULL_BEFORE_BLOCK_MISSING                  113
 # define RSA_R_N_DOES_NOT_EQUAL_P_Q                       127

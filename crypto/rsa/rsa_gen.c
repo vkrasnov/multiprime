@@ -67,9 +67,10 @@
 #include "internal/cryptlib.h"
 #include <openssl/bn.h>
 #include <openssl/rsa.h>
+#include "rsa_locl.h"
 
-static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
-                              BN_GENCB *cb);
+static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
+                                          BIGNUM *e_value, BN_GENCB *cb);
 
 /*
  * NB: this wrapper would normally be placed in rsa_lib.c and the static
@@ -82,23 +83,41 @@ int RSA_generate_key_ex(RSA *rsa, int bits, BIGNUM *e_value, BN_GENCB *cb)
 {
     if (rsa->meth->rsa_keygen)
         return rsa->meth->rsa_keygen(rsa, bits, e_value, cb);
-    return rsa_builtin_keygen(rsa, bits, e_value, cb);
+    return rsa_builtin_multi_prime_keygen(rsa, bits, 2, e_value, cb);
 }
 
-static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
-                              BN_GENCB *cb)
+int RSA_generate_multi_prime_key(RSA *rsa, int bits, int num_primes, 
+                                 BIGNUM *e_value, BN_GENCB *cb)
+{
+    if((rsa->meth->flags & RSA_METHOD_FLAG_MULTI_PRIME_OK) &&
+       rsa->meth->rsa_multi_prime_keygen) {
+        return rsa->meth->rsa_multi_prime_keygen(rsa, bits, num_primes,
+                                                 e_value, cb);
+    }
+    return rsa_builtin_multi_prime_keygen(rsa, bits, num_primes, e_value, cb);
+}
+
+static int rsa_builtin_multi_prime_keygen(RSA *rsa, int bits, int num_primes,
+                                          BIGNUM *e_value, BN_GENCB *cb)
 {
     BIGNUM *r0 = NULL, *r1 = NULL, *r2 = NULL, *r3 = NULL, *tmp;
     BIGNUM *local_r0, *local_d, *local_p;
     BIGNUM *pr0, *d, *p;
-    int bitsp, bitsq, ok = -1, n = 0;
+    int prime_bits, ok = -1, n = 0, i, j;
     BN_CTX *ctx = NULL;
+    STACK_OF(RSA_additional_prime) *additional_primes = NULL;
 
     local_r0 = BN_new();
     local_d = BN_new();
     local_p = BN_new();
     if (!local_r0 || !local_d || !local_p)
         goto err;
+
+    if (num_primes < 2) {
+        ok = 0;
+        RSAerr(RSA_F_RSA_BUILTIN_KEYGEN, RSA_R_MUST_HAVE_AT_LEAST_TWO_PRIMES);
+        goto err;
+    }
 
     ctx = BN_CTX_new();
     if (ctx == NULL)
@@ -111,8 +130,10 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
     if (r3 == NULL)
         goto err;
 
-    bitsp = (bits + 1) / 2;
-    bitsq = bits - bitsp;
+    if (num_primes > 2) {
+        if ((additional_primes = sk_RSA_additional_prime_new_null()) == NULL)
+        goto err;
+    }
 
     /* We need the RSA components non-NULL */
     if (!rsa->n && ((rsa->n = BN_new()) == NULL))
@@ -132,11 +153,29 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
     if (!rsa->iqmp && ((rsa->iqmp = BN_secure_new()) == NULL))
         goto err;
 
+    for (i = 2; i < num_primes; i++) {
+        RSA_additional_prime *ap = OPENSSL_malloc(sizeof(RSA_additional_prime));
+        if (ap == NULL)
+            goto err;
+        memset(ap, 0, sizeof(RSA_additional_prime));
+        if ((ap->prime = BN_secure_new()) == NULL)
+            goto err;
+        if ((ap->exp = BN_secure_new()) == NULL)
+            goto err;
+        if ((ap->coeff = BN_secure_new()) == NULL)
+            goto err;
+        if ((ap->r = BN_new()) == NULL)
+            goto err;
+        if (!sk_RSA_additional_prime_push(additional_primes, ap))
+            goto err;
+    }
+
     BN_copy(rsa->e, e_value);
 
     /* generate p and q */
+    prime_bits = (bits + (num_primes - 1)) / num_primes;    
     for (;;) {
-        if (!BN_generate_prime_ex(rsa->p, bitsp, 0, NULL, NULL, cb))
+        if (!BN_generate_prime_ex(rsa->p, prime_bits, 0, NULL, NULL, cb))
             goto err;
         if (!BN_sub(r2, rsa->p, BN_value_one()))
             goto err;
@@ -149,6 +188,7 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
     }
     if (!BN_GENCB_call(cb, 3, 0))
         goto err;
+    prime_bits = ((bits - prime_bits) + (num_primes - 2)) / (num_primes-1);
     for (;;) {
         /*
          * When generating ridiculously small keys, we can get stuck
@@ -157,7 +197,7 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
          */
         unsigned int degenerate = 0;
         do {
-            if (!BN_generate_prime_ex(rsa->q, bitsq, 0, NULL, NULL, cb))
+            if (!BN_generate_prime_ex(rsa->q, prime_bits, 0, NULL, NULL, cb))
                 goto err;
         } while ((BN_cmp(rsa->p, rsa->q) == 0) && (++degenerate < 3));
         if (degenerate == 3) {
@@ -176,15 +216,82 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
     }
     if (!BN_GENCB_call(cb, 3, 1))
         goto err;
+
+    if (!BN_mul(rsa->n, rsa->p, rsa->q, ctx))
+        goto err;
+
+    for (i = 2; i < num_primes; i++) {
+        RSA_additional_prime *ap =
+                       sk_RSA_additional_prime_value(additional_primes, i - 2);
+        prime_bits = ((bits - BN_num_bits(rsa->n)) + (num_primes - (i + 1))) /
+                     (num_primes - i);
+        for (;;) {
+            if (!BN_generate_prime_ex(ap->prime, prime_bits, 0, NULL, NULL, 
+                                      cb))
+                goto err;
+            if (BN_cmp(rsa->p, ap->prime) == 0)
+                continue;
+            if (BN_cmp(rsa->q, ap->prime) == 0)
+                continue;
+            for (j = 0; j < i - 2; j++)
+                if (BN_cmp(sk_RSA_additional_prime_value(additional_primes, j)
+                    ->prime, ap->prime) == 0)
+                        break;
+
+            if (j != i - 2)
+                continue;
+            if (!BN_sub(r2, ap->prime, BN_value_one()))
+                goto err;
+            if (!BN_gcd(r1, r2, rsa->e, ctx))
+                goto err;
+            if (!BN_is_one(r1))
+                continue;
+            if (i != num_primes - 1)
+                break;
+
+            /* 
+             * For the last prime we'll check that it makes
+             * n large enough. In the two prime case this isn't a
+             * problem because we generate primes with the top two
+             * bits set and so the product is always of the
+             * expected size. In the multi prime case, this doesn't
+             * follow. 
+             */
+            if (!BN_mul(r1, rsa->n, ap->prime, ctx))
+                goto err;
+            if (BN_num_bits(r1) == bits)
+                break;
+
+            if(!BN_GENCB_call(cb, 2, n++))
+                goto err;
+        }
+
+        /* 
+         * ap->r is is the product of all the primes prior to the
+         * current one (including p and q).
+         */
+        if (!BN_copy(ap->r, rsa->n))
+            goto err;
+        if (i == num_primes - 1) {
+                /* 
+                 * In the case of the last prime, we calculated n in r1
+                 * in the loop above.
+                 */
+                if (!BN_copy(rsa->n, r1))
+                    goto err;
+        } else {
+            if (!BN_mul(rsa->n, rsa->n, ap->prime, ctx))
+                goto err;
+        }
+        if(!BN_GENCB_call(cb, 3, 1))
+            goto err;
+    }
+
     if (BN_cmp(rsa->p, rsa->q) < 0) {
         tmp = rsa->p;
         rsa->p = rsa->q;
         rsa->q = tmp;
     }
-
-    /* calculate n */
-    if (!BN_mul(rsa->n, rsa->p, rsa->q, ctx))
-        goto err;
 
     /* calculate d */
     if (!BN_sub(r1, rsa->p, BN_value_one()))
@@ -193,6 +300,14 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
         goto err;               /* q-1 */
     if (!BN_mul(r0, r1, r2, ctx))
         goto err;               /* (p-1)(q-1) */
+    for (i = 2; i < num_primes; i++) {
+        RSA_additional_prime *ap =
+                       sk_RSA_additional_prime_value(additional_primes, i - 2);
+        if (!BN_sub(r3, ap->prime, BN_value_one()))
+            goto err;
+        if (!BN_mul(r0, r0, r3, ctx))
+            goto err;
+    }
     if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
         pr0 = local_r0;
         BN_with_flags(pr0, r0, BN_FLG_CONSTTIME);
@@ -225,7 +340,20 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
     if (!BN_mod_inverse(rsa->iqmp, rsa->q, p, ctx))
         goto err;
 
+    for (i = 2; i < num_primes; i++) {
+        RSA_additional_prime *ap =
+                       sk_RSA_additional_prime_value(additional_primes, i - 2);
+        if (!BN_sub(ap->exp, ap->prime, BN_value_one()))
+            goto err;
+        if (!BN_mod(ap->exp, rsa->d, ap->exp, ctx))
+            goto err;
+        if (!BN_mod_inverse(ap->coeff, ap->r, ap->prime, ctx))
+            goto err;
+    }
+
     ok = 1;
+    rsa->additional_primes = additional_primes;
+    additional_primes = NULL;
  err:
     BN_free(local_r0);
     BN_free(local_d);
@@ -237,6 +365,23 @@ static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value,
     if (ctx != NULL)
         BN_CTX_end(ctx);
     BN_CTX_free(ctx);
+
+    if (additional_primes != NULL) {
+        for (i = 0; i < sk_RSA_additional_prime_num(additional_primes); i++) {
+            RSA_additional_prime *ap =
+                           sk_RSA_additional_prime_value(additional_primes, i);
+            if (ap->prime != NULL)
+                BN_clear_free(ap->prime);
+            if (ap->exp != NULL)
+                BN_clear_free(ap->exp);
+            if (ap->coeff != NULL)
+                BN_clear_free(ap->coeff);
+            if (ap->r != NULL)
+                BN_clear_free(ap->r);
+        }
+        sk_RSA_additional_prime_pop_free(additional_primes, 
+                                         int_rsa_free_additional_prime);
+    }
 
     return ok;
 }

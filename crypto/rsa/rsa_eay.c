@@ -139,11 +139,16 @@ static RSA_METHOD rsa_pkcs1_eay_meth = {
                                  * if e == 3 */
     RSA_eay_init,
     RSA_eay_finish,
+#ifdef OPENSSL_FIPS
     RSA_FLAG_FIPS_METHOD,       /* flags */
+#else
+    RSA_METHOD_FLAG_MULTI_PRIME_OK,
+#endif
     NULL,
     0,                          /* rsa_sign */
     0,                          /* rsa_verify */
-    NULL                        /* rsa_keygen */
+    NULL,                       /* rsa_keygen */
+    NULL                        /* rsa_multi_prime_keygen */
 };
 
 const RSA_METHOD *RSA_PKCS1_SSLeay(void)
@@ -712,10 +717,15 @@ static int RSA_eay_public_decrypt(int flen, const unsigned char *from,
 
 static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
 {
-    BIGNUM *r1, *m1, *vrfy;
+    BIGNUM *r1, *r2, *vrfy;
     BIGNUM *local_dmp1, *local_dmq1, *local_c, *local_r1;
-    BIGNUM *dmp1, *dmq1, *c, *pr1;
-    int ret = 0;
+    BIGNUM *dmp1, *dmq1, *pr1;
+    const BIGNUM *c;
+    int ret = 0, idx, num_additional_primes = 0;
+
+    if (rsa->additional_primes != NULL)
+        num_additional_primes =
+                           sk_RSA_additional_prime_num(rsa->additional_primes);
 
     local_dmp1 = BN_new();
     local_dmq1 = BN_new();
@@ -726,7 +736,7 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
 
     BN_CTX_start(ctx);
     r1 = BN_CTX_get(ctx);
-    m1 = BN_CTX_get(ctx);
+    r2 = BN_CTX_get(ctx);
     vrfy = BN_CTX_get(ctx);
 
     {
@@ -775,14 +785,13 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
 
     /* compute I mod q */
     if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+        BN_with_flags(local_c, I, BN_FLG_CONSTTIME);
         c = local_c;
-        BN_with_flags(c, I, BN_FLG_CONSTTIME);
-        if (!BN_mod(r1, c, rsa->q, ctx))
-            goto err;
-    } else {
-        if (!BN_mod(r1, I, rsa->q, ctx))
-            goto err;
-    }
+    } else
+        c = I;
+
+    if (!BN_mod(r1, c, rsa->q, ctx))
+        goto err;
 
     /* compute r1^dmq1 mod q */
     if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
@@ -790,19 +799,18 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
         BN_with_flags(dmq1, rsa->dmq1, BN_FLG_CONSTTIME);
     } else
         dmq1 = rsa->dmq1;
-    if (!rsa->meth->bn_mod_exp(m1, r1, dmq1, rsa->q, ctx, rsa->_method_mod_q))
+    if (!rsa->meth->bn_mod_exp(r2, r1, dmq1, rsa->q, ctx, rsa->_method_mod_q))
         goto err;
 
     /* compute I mod p */
     if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+        BN_with_flags(local_c, I, BN_FLG_CONSTTIME);
         c = local_c;
-        BN_with_flags(c, I, BN_FLG_CONSTTIME);
-        if (!BN_mod(r1, c, rsa->p, ctx))
-            goto err;
-    } else {
-        if (!BN_mod(r1, I, rsa->p, ctx))
-            goto err;
-    }
+    } else
+        c = I;
+
+    if (!BN_mod(r1, c, rsa->p, ctx))
+        goto err;
 
     /* compute r1^dmp1 mod p */
     if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
@@ -813,7 +821,7 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
     if (!rsa->meth->bn_mod_exp(r0, r1, dmp1, rsa->p, ctx, rsa->_method_mod_p))
         goto err;
 
-    if (!BN_sub(r0, r0, m1))
+    if (!BN_sub(r0, r0, r2))
         goto err;
     /*
      * This will help stop the size of r0 increasing, which does affect the
@@ -847,9 +855,61 @@ static int RSA_eay_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
             goto err;
     if (!BN_mul(r1, r0, rsa->q, ctx))
         goto err;
-    if (!BN_add(r0, r1, m1))
+    if (!BN_add(r0, r1, r2))
         goto err;
 
+    for (idx = 0; idx < num_additional_primes; idx++) {
+        /* multi-prime RSA. */
+        BIGNUM *exp, *prime;
+        RSA_additional_prime* ap =
+                    sk_RSA_additional_prime_value(rsa->additional_primes, idx);
+
+        /* 
+         * c will already point to a BIGNUM with the
+         * correct flags if RSA_FLAG_NO_CONSTTIME isn't set.
+         */
+        if (!BN_mod(r1, (rsa->flags & RSA_FLAG_NO_CONSTTIME) ? I : c, 
+                    ap->prime, ctx))
+            goto err;
+
+        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME)) {
+            exp = local_dmq1;
+            BN_with_flags(exp, ap->exp, BN_FLG_CONSTTIME);
+            prime = local_dmp1;
+            BN_with_flags(prime, ap->prime, BN_FLG_CONSTTIME);
+        } else {
+            exp = ap->exp;
+            prime = ap->prime;
+        }
+
+        if (rsa->flags & RSA_FLAG_CACHE_PRIVATE) {
+            if (!BN_MONT_CTX_set_locked(&ap->method_mod, CRYPTO_LOCK_RSA,
+                                        prime, ctx))
+                goto err;
+        }
+
+        /* compute r1^dmr1 mod r */
+        if (!rsa->meth->bn_mod_exp(r2,r1,exp,prime,ctx,ap->method_mod))
+            goto err;
+        if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+            BN_set_flags(r2, BN_FLG_CONSTTIME);
+
+        if (!BN_sub(r2,r2,r0))
+            goto err;
+        if (!BN_mul(r2,r2,ap->coeff,ctx))
+            goto err;
+        if (!BN_mod(r2,r2,prime,ctx))
+            goto err;
+        if (BN_is_negative(r2)) {
+            if (!BN_add(r2,r2,prime)) 
+                goto err;
+        }
+        if (!BN_mul(r2,r2,ap->r,ctx))
+            goto err;
+        if (!BN_add(r0,r0,r2))
+            goto err;
+    }
+    
     if (rsa->e && rsa->n) {
         if (!rsa->meth->bn_mod_exp(vrfy, r0, rsa->e, rsa->n, ctx,
                                    rsa->_method_mod_n))
@@ -911,9 +971,22 @@ static int RSA_eay_init(RSA *rsa)
 
 static int RSA_eay_finish(RSA *rsa)
 {
+    int idx;
+    int num_additional_primes = 0;
+
+    if (rsa->additional_primes != NULL)
+        num_additional_primes =
+                           sk_RSA_additional_prime_num(rsa->additional_primes);
+
     BN_MONT_CTX_free(rsa->_method_mod_n);
     BN_MONT_CTX_free(rsa->_method_mod_p);
     BN_MONT_CTX_free(rsa->_method_mod_q);
+    for (idx = 0; idx < num_additional_primes; idx++) {
+        RSA_additional_prime* ap =
+                    sk_RSA_additional_prime_value(rsa->additional_primes, idx);
+        if (ap->method_mod != NULL)
+            BN_MONT_CTX_free(ap->method_mod);
+    }
     return (1);
 }
 

@@ -63,11 +63,17 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
     BN_CTX *ctx;
     int r;
     int ret = 1;
+    int idx;
+    int num_additional_primes = 0;
 
     if (!key->p || !key->q || !key->n || !key->e || !key->d) {
         RSAerr(RSA_F_RSA_CHECK_KEY_EX, RSA_R_VALUE_MISSING);
         return 0;
     }
+
+    if (key->additional_primes != NULL)
+        num_additional_primes = 
+                           sk_RSA_additional_prime_num(key->additional_primes);
 
     i = BN_new();
     j = BN_new();
@@ -100,11 +106,33 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
         RSAerr(RSA_F_RSA_CHECK_KEY_EX, RSA_R_Q_NOT_PRIME);
     }
 
+    for (idx = 0; idx < num_additional_primes; idx++) {
+        const RSA_additional_prime* ap = 
+                    sk_RSA_additional_prime_value(key->additional_primes, idx);
+        r = BN_is_prime_ex(ap->prime, BN_prime_checks, NULL, NULL);
+        if (r != 1) {
+            ret = r;
+            if (r != 0)
+                goto err;
+            RSAerr(RSA_F_RSA_CHECK_KEY, RSA_R_ADDITIONAL_PRIME_NOT_PRIME);
+        }
+    }
+ 	
     /* n = p*q? */
     r = BN_mul(i, key->p, key->q, ctx);
     if (!r) {
         ret = -1;
         goto err;
+    }
+
+    for (idx = 0; idx < num_additional_primes; idx++) {
+        const RSA_additional_prime* ap = 
+                    sk_RSA_additional_prime_value(key->additional_primes, idx);
+        r = BN_mul(i, i, ap->prime, ctx);
+        if (!r) {
+            ret = -1;
+            goto err;
+        }
     }
 
     if (BN_cmp(i, key->n) != 0) {
@@ -199,6 +227,46 @@ int RSA_check_key_ex(const RSA *key, BN_GENCB *cb)
         if (BN_cmp(i, key->iqmp) != 0) {
             ret = 0;
             RSAerr(RSA_F_RSA_CHECK_KEY_EX, RSA_R_IQMP_NOT_INVERSE_OF_Q);
+        }
+    }
+
+    for (idx = 0; idx < num_additional_primes; idx++) {
+        const RSA_additional_prime* ap =
+                    sk_RSA_additional_prime_value(key->additional_primes, idx);
+        /* exp = d mod (prime-1)? */
+        r = BN_sub(i, ap->prime, BN_value_one());
+        if (!r) {
+            ret = -1;
+            goto err;
+        }
+        r = BN_mod(j, key->d, i, ctx);
+        if (!r) {
+            ret = -1;
+            goto err;
+        }
+
+        if (BN_cmp(j, ap->exp) != 0) {
+            ret = 0;
+            RSAerr(RSA_F_RSA_CHECK_KEY, 
+                   RSA_R_ADDITIONAL_EXP_NOT_CONGRUENT_TO_D);
+        }
+
+        /* coeff * R = 1 mod r? */
+        r = BN_mul(i, ap->r, ap->coeff, ctx);
+        if (!r) {
+            ret = -1;
+            goto err;
+        }
+
+        r = BN_mod(j, i, ap->prime, ctx);
+        if (!r) {
+            ret = -1;
+            goto err;
+        }
+
+        if (BN_cmp(j, BN_value_one()) != 0) {
+            ret = 0;
+            RSAerr(RSA_F_RSA_CHECK_KEY, RSA_R_ADDITIONAL_COEFF_INCORRECT);
         }
     }
 

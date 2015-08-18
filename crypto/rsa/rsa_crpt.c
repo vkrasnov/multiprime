@@ -83,6 +83,11 @@ int RSA_public_encrypt(int flen, const unsigned char *from, unsigned char *to,
 int RSA_private_encrypt(int flen, const unsigned char *from,
                         unsigned char *to, RSA *rsa, int padding)
 {
+    if (!(rsa->meth->flags & RSA_METHOD_FLAG_MULTI_PRIME_OK) &&
+        rsa->additional_primes != NULL) {
+        RSAerr(RSA_F_RSA_PRIVATE_ENCRYPT, RSA_R_MULTI_PRIME_NOT_SUPPORTED);
+        return -1;
+    }
     return (rsa->meth->rsa_priv_enc(flen, from, to, rsa, padding));
 }
 

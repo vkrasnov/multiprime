@@ -193,7 +193,7 @@ static int do_rsa_print(BIO *bp, const RSA *x, int off, int priv)
     char *str;
     const char *s;
     unsigned char *m = NULL;
-    int ret = 0, mod_len = 0;
+    int ret = 0, mod_len = 0, num_additional_primes = 0;
     size_t buf_len = 0;
 
     update_buflen(x->n, &buf_len);
@@ -206,6 +206,18 @@ static int do_rsa_print(BIO *bp, const RSA *x, int off, int priv)
         update_buflen(x->dmp1, &buf_len);
         update_buflen(x->dmq1, &buf_len);
         update_buflen(x->iqmp, &buf_len);
+        if (x->additional_primes != NULL) {
+            int i;
+            num_additional_primes = 
+                             sk_RSA_additional_prime_num(x->additional_primes);
+            for (i = 0; i < num_additional_primes; i++) {
+                RSA_additional_prime *ap = 
+                        sk_RSA_additional_prime_value(x->additional_primes, i);
+                update_buflen(ap->prime, &buf_len);
+                update_buflen(ap->exp, &buf_len);
+                update_buflen(ap->coeff, &buf_len);
+            }
+        }
     }
 
     m = OPENSSL_malloc(buf_len + 10);
@@ -250,6 +262,23 @@ static int do_rsa_print(BIO *bp, const RSA *x, int off, int priv)
             goto err;
         if (!ASN1_bn_print(bp, "coefficient:", x->iqmp, m, off))
             goto err;
+        if (num_additional_primes > 0) {
+            int i;
+            if (BIO_printf(bp, "otherPrimeInfos:\n") <= 0)
+                goto err;
+            for (i = 0; i < num_additional_primes; i++) {
+                RSA_additional_prime *ap;
+                if (BIO_printf(bp, "otherPrimeInfo (prime %d):\n", i+3) <= 0)
+                    goto err;
+                ap = sk_RSA_additional_prime_value(x->additional_primes, i);
+                if (!ASN1_bn_print(bp,"prime:", ap->prime, m, off))
+                    goto err;
+                if (!ASN1_bn_print(bp,"exponent:", ap->exp, m, off))
+                    goto err;
+                if (!ASN1_bn_print(bp,"coeff:", ap->coeff, m, off))
+                    goto err;
+            }
+        }
     }
     ret = 1;
  err:

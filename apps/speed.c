@@ -351,7 +351,7 @@ static int found(const char *name, const OPT_PAIR * pairs, int *result)
 typedef enum OPTION_choice {
     OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
     OPT_ELAPSED, OPT_EVP, OPT_DECRYPT, OPT_ENGINE, OPT_MULTI,
-    OPT_MR, OPT_MB, OPT_MISALIGN
+    OPT_MR, OPT_MB, OPT_MISALIGN, OPT_NPRIMES
 } OPTION_CHOICE;
 
 OPTIONS speed_options[] = {
@@ -372,6 +372,7 @@ OPTIONS speed_options[] = {
 #ifndef OPENSSL_NO_ENGINE
     {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
 #endif
+    {"nprimes", OPT_NPRIMES, 'p', "Test RSA with n prime modulus"},
     {NULL},
 };
 
@@ -571,7 +572,8 @@ int speed_main(int argc, char **argv)
     OPTION_CHOICE o;
     int decrypt = 0, multiblock = 0, doit[ALGOR_NUM], pr_header = 0;
     int dsa_doit[DSA_NUM], rsa_doit[RSA_NUM];
-    int ret = 1, i, j, k, misalign = MAX_MISALIGNMENT + 1;
+    int ret = 1, i, j, k, misalign = MAX_MISALIGNMENT + 1, rsa_nprimes = 2;
+    BIGNUM *e = BN_new();
     long c[ALGOR_NUM][SIZE_NUM], count = 0, save_count = 0;
     unsigned char *buf_malloc = NULL, *buf2_malloc = NULL;
     unsigned char *buf = NULL, *buf2 = NULL;
@@ -846,6 +848,13 @@ int speed_main(int argc, char **argv)
         case OPT_MB:
             multiblock = 1;
             break;
+        case OPT_NPRIMES:
+            rsa_nprimes = atoi(opt_arg());
+            if (rsa_nprimes < 2) {
+                BIO_printf(bio_err, "Minimal number of RSA primes is 2\n");
+                goto opterr;
+            }
+            break;
         }
     }
     argc = opt_num_rest();
@@ -969,12 +978,19 @@ int speed_main(int argc, char **argv)
                    "instead of user CPU time.\n");
 
 #ifndef OPENSSL_NO_RSA
+    BN_set_word(e, 65537);
     for (i = 0; i < RSA_NUM; i++) {
         const unsigned char *p;
 
         p = rsa_data[i];
-        rsa_key[i] = d2i_RSAPrivateKey(NULL, &p, rsa_data_length[i]);
-        if (rsa_key[i] == NULL) {
+        if (rsa_nprimes == 2)
+            rsa_key[i] = d2i_RSAPrivateKey(NULL, &p, rsa_data_length[i]);
+        else if (rsa_doit[i]) {
+            rsa_key[i] = RSA_new();
+            RSA_generate_multi_prime_key(rsa_key[i], rsa_bits[i],
+                                         rsa_nprimes, e, NULL);
+        }
+        if (rsa_doit[i] && (rsa_key[i] == NULL)) {
             BIO_printf(bio_err, "internal error loading RSA key number %d\n",
                        i);
             goto end;

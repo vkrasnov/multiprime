@@ -66,6 +66,7 @@
 #ifndef OPENSSL_NO_ENGINE
 # include <openssl/engine.h>
 #endif
+#include "rsa_locl.h"
 
 static const RSA_METHOD *default_RSA_meth = NULL;
 
@@ -163,6 +164,7 @@ RSA *RSA_new_method(ENGINE *engine)
     ret->dmp1 = NULL;
     ret->dmq1 = NULL;
     ret->iqmp = NULL;
+    ret->additional_primes = NULL;
     ret->references = 1;
     ret->_method_mod_n = NULL;
     ret->_method_mod_p = NULL;
@@ -232,6 +234,20 @@ void RSA_free(RSA *r)
     BN_BLINDING_free(r->blinding);
     BN_BLINDING_free(r->mt_blinding);
     OPENSSL_free_locked(r->bignum_data);
+    if (r->additional_primes != NULL) {
+        int j;
+        for (j = 0; j < sk_RSA_additional_prime_num(r->additional_primes); j++)
+        {
+            RSA_additional_prime *ap = 
+                        sk_RSA_additional_prime_value(r->additional_primes, j);
+            BN_clear_free(ap->prime);
+            BN_clear_free(ap->exp);
+            BN_clear_free(ap->coeff);
+            BN_clear_free(ap->r);
+        }
+        sk_RSA_additional_prime_pop_free(r->additional_primes,
+                                         int_rsa_free_additional_prime);
+    }
     OPENSSL_free(r);
 }
 
@@ -309,6 +325,11 @@ int RSA_memory_lock(RSA *r)
 
     r->bignum_data = p;
     return (1);
+}
+
+extern void int_rsa_free_additional_prime(RSA_additional_prime *prime)
+{
+    OPENSSL_free(prime);
 }
 
 int RSA_security_bits(const RSA *rsa)
