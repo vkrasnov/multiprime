@@ -158,6 +158,20 @@ static int parallel_mod_exp_eligible(RSA *rsa, int num_additional_primes)
     /* Currently only 2048 moduly with 3 and 4 primes are optimized */
     if ((OPENSSL_ia32cap_loc()[2] & (1 << 5)) == 0)
         return 0;
+    if (BN_num_bits(rsa->n) == 3072 && num_additional_primes == 2) {
+        RSA_additional_prime *p3 =
+                      sk_RSA_additional_prime_value(rsa->additional_primes, 0);
+        RSA_additional_prime *p4 =
+                      sk_RSA_additional_prime_value(rsa->additional_primes, 1);
+
+        if (BN_num_words(rsa->dmq1) == 12 && BN_num_words(rsa->q) == 12 &&
+            BN_num_words(rsa->dmp1) == 12 && BN_num_words(rsa->p) == 12 &&
+            BN_num_words(p3->prime) == 12 && BN_num_words(p3->exp) == 12 &&
+            BN_num_words(p4->prime) == 12 && BN_num_words(p4->exp) == 12)
+            return 768;
+        else
+            return 0;
+    }
     if (BN_num_bits(rsa->n) != 2048)
         return 0;
     if (num_additional_primes == 1)

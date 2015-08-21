@@ -48,6 +48,20 @@ void AMS_WW_683_x4(BN_ULONG *rpx4, const BN_ULONG *apx4, const BN_ULONG *npx4,
 void STORE_683(void *in_t, const void *inx4, int index);
 void SELECT_683(void *valx4, const void *in_t, int *index, int limit);
 
+void LOAD_TRANSPOSE_768(BN_ULONG *rpx4, const BN_ULONG *b0, const BN_ULONG *b1,
+                        const BN_ULONG *b2, const BN_ULONG *b3);
+void TRANSPOSE_STORE_768(BN_ULONG *inx4, const BN_ULONG *o0,
+                         const BN_ULONG *o1, const BN_ULONG *o2,
+                         const BN_ULONG *o3);
+void AMM_WW_768_x4(BN_ULONG *rpx4, const BN_ULONG *apx4, const BN_ULONG *bpx4,
+                   const BN_ULONG *npx4,const BN_ULONG *k0x4);
+void AMS_WW_768_x4(BN_ULONG *rpx4, const BN_ULONG *apx4, const BN_ULONG *npx4,
+                   const BN_ULONG *k0x4, int repeat);
+void STORE_768(void *in_t, const void *inx4, int index);
+void SELECT_768(void *valx4, const void *in_t, int *index, int limit);
+
+
+
 #if defined(__GNUC__)
 # define ALIGN64 __attribute__((aligned(64)))
 #elif defined(_MSC_VER)
@@ -64,8 +78,12 @@ void SELECT_683(void *valx4, const void *in_t, int *index, int limit);
 # define ALIGN4096
 #endif
 
-ALIGN64 static const BN_ULONG one[24*4] =
+ALIGN64 static const BN_ULONG one[28*4] =
     {1,1,1,1,
+     0,0,0,0,
+     0,0,0,0,
+     0,0,0,0,
+     0,0,0,0,
      0,0,0,0,
      0,0,0,0,
      0,0,0,0,
@@ -136,6 +154,35 @@ ALIGN64 static const BN_ULONG two680[24*4] =
     0,0,0,0,
     1<<13,1<<13,1<<13,1<<13};
 
+ALIGN64 static const BN_ULONG two60[27*4] =
+    {0,0,0,0,
+    0,0,0,0,
+    1<<2,1<<2,1<<2,1<<2,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0,
+    0,0,0,0};
+
 /* Performs 4 modular exponentiations of 512 or 683 bit simultaneously */
 void RSAZ_mod_exp_avx2_x4(BIGNUM *r0, BIGNUM *e0, BIGNUM *p0, BN_MONT_CTX *c0,
                           BIGNUM *r1, BIGNUM *e1, BIGNUM *p1, BN_MONT_CTX *c1,
@@ -163,7 +210,7 @@ void RSAZ_mod_exp_avx2_x4(BIGNUM *r0, BIGNUM *e0, BIGNUM *p0, BN_MONT_CTX *c0,
     int operand_words;
     int i;
 
-    __attribute__ ((aligned(4096))) BN_ULONG table_s[14*4*16] = {0};
+    __attribute__ ((aligned(4096))) BN_ULONG table_s[28*32] = {0};
 
     void(*LOAD_TRANSPOSE)(BN_ULONG *rpx4, const BN_ULONG *b0,
                    const BN_ULONG *b1, const BN_ULONG *b2, const BN_ULONG *b3);
@@ -209,8 +256,24 @@ void RSAZ_mod_exp_avx2_x4(BIGNUM *r0, BIGNUM *e0, BIGNUM *p0, BN_MONT_CTX *c0,
         LOAD_TRANSPOSE(R2, c0->RR.d, c1->RR.d, c2->RR.d, c3->RR.d);
 
         AMM(R2, R2, two680, m, k);
+    } else if(mod_bits <= 768) {
+        AMM = AMM_WW_768_x4;
+        AMS = AMS_WW_768_x4;
+        TRANSPOSE_STORE = TRANSPOSE_STORE_768;
+        LOAD_TRANSPOSE  = LOAD_TRANSPOSE_768;
+        STORE = STORE_768;
+        SELECT = SELECT_768;
+
+        window_size = 4;
+        operand_words = 28;
+
+        LOAD_TRANSPOSE(m, p0->d, p1->d, p2->d, p3->d);
+        LOAD_TRANSPOSE(base, r0->d, r1->d, r2->d, r3->d);
+        LOAD_TRANSPOSE(R2, c0->RR.d, c1->RR.d, c2->RR.d, c3->RR.d);
+
+        AMM(R2, R2, R2, m, k);
+        AMM(R2, R2, two60, m, k);
     } else {
-        /* Shouldn't be here */
         return;
     }
 

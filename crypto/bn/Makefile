@@ -113,6 +113,8 @@ rsaz_avx2_512bit_x4.s: asm/rsaz_avx2_512bit_x4.s
 	cp asm/rsaz_avx2_512bit_x4.s .
 rsaz_avx2_683bit_x4.s: asm/rsaz_avx2_683bit_x4.s
 	cp asm/rsaz_avx2_683bit_x4.s .
+rsaz_avx2_768bit_x4.s: asm/rsaz_avx2_768bit_x4.s
+	cp asm/rsaz_avx2_768bit_x4.s .
 
 bn-ia64.s:	asm/ia64.S
 	$(CC) $(CFLAGS) -E asm/ia64.S > $@
